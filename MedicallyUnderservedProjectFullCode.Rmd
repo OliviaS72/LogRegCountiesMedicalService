@@ -1,0 +1,484 @@
+---
+title: "Medically Underserved Counties: Code in Full Order"
+author: "Olivia Schultheis"
+date: "2024-11-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)
+# Read in data
+county_2019 = read_excel("SDOH_2019_COUNTY_1_0.xlsx", sheet = "Data")
+data2019 <- county_2019
+# Identify counties that have NA for the response
+remove <- which(is.na(data2019["HRSA_MUA_COUNTY"]))
+# Remove counties that have NA for the Response
+data2019 <- data2019[-c(remove),]
+
+# Transform Region to a Factor
+data2019$REGION <- factor(data2019$REGION)
+# Transform the response first to Numeric (it is orginally Character)
+data2019$HRSA_MUA_COUNTY <- as.numeric(data2019$HRSA_MUA_COUNTY)
+# Then, convert response to factor (0 will be Level 1 (Not Underserved) and 1 will be Level 2 (Underserved))
+data2019$HRSA_MUA_COUNTY <- factor(data2019$HRSA_MUA_COUNTY)
+# Transform Rural-Urban Continuum Code to A Factor
+ data2019$AHRF_USDA_RUCC_2013 <- factor(data2019$AHRF_USDA_RUCC_2013)
+
+
+# Re-label the levels of rural-urban continuum code to clarify what the categories represent
+data2019$AHRF_USDA_RUCC_2013 <- factor(data2019$AHRF_USDA_RUCC_2013, levels = c("1", "2", "3", "4",
+                                                "5", "6", "7", "8", "9"), labels = c("Metro pop. 1 million or more", "Metro 250,000 to 1 million", "Metro Areas < 250,000", "Urban 20,000 +, adjacent to metro", "Urban 20,000 +, not adjacent to metro", "Urban 2,500- 19,999, adjacent to metro", "Urban 2,500 to 19,999 not adjacent to metro", "Rural or less than 2,500 urban, adjacent to metro", "Rural or less than 2,500 urban, not adjacent to metro"))
+```
+
+
+```{r}
+# Table of Medically Underserved vs. Not Medically Underserved
+table(data2019$HRSA_MUA_COUNTY)
+```
+
+
+```{r}
+# VIF values for model using REGION, rural-urban continuum code from 2013 (AHRF_USDA_RUCC_2013)
+mod <- glm(HRSA_MUA_COUNTY ~ REGION + AHRF_USDA_RUCC_2013 + ACS_PCT_GRADUATE_DGR + ACS_PCT_HOUSEHOLDER_BLACK + ACS_PCT_HOUSEHOLDER_ASIAN + ACS_PCT_HOUSEHOLDER_AIAN, data = data2019, family = "binomial")
+library(car)
+vif(mod)
+```
+
+
+```{r}
+# Find the probabilities (fitted values)
+probabilities <- predict(mod, type = "response")
+
+
+# Pull just the quantitative variables from original dataset
+cols <- data2019[,c("ACS_PCT_HOUSEHOLDER_BLACK", "ACS_PCT_GRADUATE_DGR",
+                      "ACS_PCT_HOUSEHOLDER_ASIAN", "ACS_PCT_HOUSEHOLDER_AIAN")]
+
+# This removes the 10 variables that were omitted from the logistic regression due to NAs
+remove <- which(is.na(cols$ACS_PCT_HOUSEHOLDER_ASIAN))
+cols <- cols[-remove,]
+
+
+# Change Name of AIAN to appear more intuitive
+colnames(cols)[4] <- "ACS_PCT_HOUSEHOLDER_AMINDIAN_ALASKAN"
+# Get the logit for each predictor value for all quantitative variables in model
+library(dplyr)
+library(tidyverse)
+library(broom)
+plotdata <- cols %>%
+  mutate(logit = log(probabilities/(1-probabilities)))%>%
+  gather(key = "predictors", value = "predictor.value", -logit)
+```
+
+
+```{r}
+# Plot the logit against the predictor values
+ggplot(plotdata, aes(x = predictor.value, y = logit))+
+   geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  facet_wrap(~predictors, scales = "free_x")+
+  xlab("Predictor Value") + ylab("Logit")
+```
+
+
+```{r}
+# Getting R^2 of logit against variables to determine linearity
+
+# Percent householder black
+using <- subset(plotdata,predictors =="ACS_PCT_HOUSEHOLDER_BLACK")
+a <- summary(lm(logit~predictor.value, data = using))
+a$r.squared
+
+# Percent householder Asian
+using <- subset(plotdata,predictors =="ACS_PCT_HOUSEHOLDER_ASIAN")
+b <- summary(lm(logit~predictor.value, data = using))
+b$r.squared
+
+# Percent householder American Indian/Alaskan Native
+using <- subset(plotdata,predictors =="ACS_PCT_HOUSEHOLDER_AMINDIAN_ALASKAN")
+c <- summary(lm(logit~predictor.value, data = using))
+c$r.squared
+
+# Percent Graduate Degree
+using <- subset(plotdata,predictors =="ACS_PCT_GRADUATE_DGR")
+d <- summary(lm(logit~predictor.value, data = using))
+d$r.squared
+```
+
+# Finding Outliers for percent of householders who are only African American
+```{r}
+library(openxlsx)
+# 1st and 3rd quantiles for ACS_PCT_HOUSEHOLDER_BLACK
+Q1 <- quantile(data2019$ACS_PCT_HOUSEHOLDER_BLACK, 0.25, na.rm= TRUE)
+Q3 <- quantile(data2019$ACS_PCT_HOUSEHOLDER_BLACK, 0.75, na.rm = TRUE)
+# IQR for percent of householders that are black
+IQR <- IQR(data2019$ACS_PCT_HOUSEHOLDER_BLACK, na.rm = TRUE)
+# Lower and Upper bounds to determine outliers
+lower_bound <- Q1 - 1.5 * IQR
+upper_bound <- Q3 + 1.5 * IQR
+# Points that are outliers based on value for percent of householders that are African American
+outliers <- subset(data2019, data2019$ACS_PCT_HOUSEHOLDER_BLACK < lower_bound | data2019$ACS_PCT_HOUSEHOLDER_BLACK > upper_bound)
+
+# Find index of outliers
+a <- which(data2019$ACS_PCT_HOUSEHOLDER_BLACK < lower_bound | data2019$ACS_PCT_HOUSEHOLDER_BLACK > upper_bound)
+
+# Save dataset without outliers
+look <- data2019[-a,]
+# Distribution of REGION for points that are not outliers
+table(look$REGION)
+# Distribution of REGION for points that are outliers
+table(outliers$REGION)
+write.xlsx(outliers, "ACS_PCT_BLACK OUTLIERS.xlsx")
+```
+
+# Finding Outliers for Percent of Householders who are only American Indian/ Alaskan Native
+```{r}
+# 1st and third quantiles for percent householders American Indian/Alaskan Native
+Q1 <- quantile(data2019$ACS_PCT_HOUSEHOLDER_AIAN, 0.25, na.rm= TRUE)
+Q3 <- quantile(data2019$ACS_PCT_HOUSEHOLDER_AIAN, 0.75, na.rm = TRUE)
+# IQR for ACS_PCT_HOUSEHOLDER_AIAN
+IQR <- IQR(data2019$ACS_PCT_HOUSEHOLDER_AIAN, na.rm = TRUE)
+# Lower and upper bound to define outlier region
+lower_bound <- Q1 - 1.5 * IQR
+upper_bound <- Q3 + 1.5 * IQR
+# Data for outliers based on value of ACS_PCT_HOUSEHOLDER_AIAN
+outliers <- subset(data2019, data2019$ACS_PCT_HOUSEHOLDER_AIAN < lower_bound | data2019$ACS_PCT_HOUSEHOLDER_AIAN > upper_bound)
+# Save indices for AIAN outliers
+b <- which(data2019$ACS_PCT_HOUSEHOLDER_AIAN < lower_bound | data2019$ACS_PCT_HOUSEHOLDER_AIAN > upper_bound)
+write.xlsx(outliers, "ACS_PCT_AIAN OUTLIERS.xlsx")
+```
+
+# Read in Excel files just created (for outliers)
+
+```{r}
+blackoutliers <- read_excel("ACS_PCT_BLACK OUTLIERS.xlsx")
+table(blackoutliers$REGION)
+alaskanoutliers <- read_excel("ACS_PCT_AIAN OUTLIERS.xlsx")
+table(alaskanoutliers$REGION)
+```
+
+
+```{r}
+# Find points that are outliers based on the value in BOTH ACS_PCT_HOUSEHOLDER_BLACK AND ACS_PCT_HOUSEHOLDER_AIAN
+q <- intersect(a,b)
+# Find ACS_PCT_HOUSEHOLDER_BLACK outliers that are NOT ACS_PCT_HOUSEHOLDER_AIAN outliers
+r <- setdiff(a,b)
+# Find ACS_PCT_HOUSEHOLDER_AIAN outliers that are NOT ACS_PCT_HOUSEHOLDER_BLACK outliers
+s <- setdiff(b,a)
+# IDs of ALL OUTLIERS
+ids <- c(q,r,s)
+# create a copy of data2019
+copy <- data2019
+# Remove the outliers for analysis
+nooutliersany <- copy[-ids,]
+```
+
+# RE run model without any outliers (based on IQR)
+```{r}
+# Just change data = data2019 to data = nooutliersany
+mod2 <- glm(HRSA_MUA_COUNTY ~ REGION + AHRF_USDA_RUCC_2013 + ACS_PCT_GRADUATE_DGR + ACS_PCT_HOUSEHOLDER_BLACK + ACS_PCT_HOUSEHOLDER_ASIAN + ACS_PCT_HOUSEHOLDER_AIAN, data = nooutliersany, family = "binomial")
+```
+
+
+# Check linearity with logit
+```{r}
+# Find the probabilities (fitted values)
+probabilities <- predict(mod2, type = "response")
+
+
+# Pull just the quantitative variables from dataset with no outliers
+cols <- nooutliersany[,c("ACS_PCT_HOUSEHOLDER_BLACK", "ACS_PCT_GRADUATE_DGR",
+                      "ACS_PCT_HOUSEHOLDER_ASIAN", "ACS_PCT_HOUSEHOLDER_AIAN")]
+
+# Remove NAs
+remove <- which(is.na(cols$ACS_PCT_HOUSEHOLDER_ASIAN))
+cols <- cols[-remove,]
+
+
+# Change Name of AIAN to appear more intuitive
+colnames(cols)[4] <- "ACS_PCT_HOUSEHOLDER_AMINDIAN_ALASKAN"
+# Get the logit for each predictor value for all quantitative variables in model
+library(dplyr)
+library(tidyverse)
+library(broom)
+plotdata <- cols %>%
+  mutate(logit = log(probabilities/(1-probabilities)))%>%
+  gather(key = "predictors", value = "predictor.value", -logit)
+```
+
+
+```{r}
+# Plot the logit against the predictor values
+ggplot(plotdata, aes(x = predictor.value, y = logit))+
+   geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  facet_wrap(~predictors, scales = "free_x")+
+  xlab("Predictor Value (No Outliers)") + ylab("Logit")
+```
+
+# Model without ACS_PCT_HOUSEHOLDER_BLACK or ACS_PCT_HOUSEHOLDER_AMINDIAN_ALASKAN
+
+```{r}
+mod3 <- glm(HRSA_MUA_COUNTY ~ REGION + AHRF_USDA_RUCC_2013 + ACS_PCT_HOUSEHOLDER_ASIAN + ACS_PCT_GRADUATE_DGR, data = data2019, family = "binomial")
+vif(mod3)
+```
+
+
+
+# Check linearity with logit
+```{r}
+# Find the probabilities (fitted values)
+probabilities <- predict(mod3, type = "response")
+
+
+# Pull just the quantitative variables from original dataset
+cols <- data2019[,c( "ACS_PCT_GRADUATE_DGR",
+                      "ACS_PCT_HOUSEHOLDER_ASIAN")]
+
+# Remove NAs
+remove <- which(is.na(cols$ACS_PCT_HOUSEHOLDER_ASIAN))
+cols <- cols[-remove,]
+
+
+# Get the logit for each predictor value for all quantitative variables in model
+library(dplyr)
+library(tidyverse)
+library(broom)
+plotdata <- cols %>%
+  mutate(logit = log(probabilities/(1-probabilities)))%>%
+  gather(key = "predictors", value = "predictor.value", -logit)
+```
+
+```{r}
+# Plot the logit against the predictor values
+ggplot(plotdata, aes(x = predictor.value, y = logit))+
+   geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "lm") + 
+  facet_wrap(~predictors, scales = "free_x")+
+  xlab("Predictor Value") + ylab("Logit")
+```
+
+# Find R^2
+
+```{r}
+# Getting R^2 of logit against variables to determine linearity
+
+# Percent householder Graduate Degree
+using <- subset(plotdata,predictors =="ACS_PCT_GRADUATE_DGR")
+a <- summary(lm(logit~predictor.value, data = using))
+a$r.squared
+
+# Percent householder Asian
+using <- subset(plotdata,predictors =="ACS_PCT_HOUSEHOLDER_ASIAN")
+b <- summary(lm(logit~predictor.value, data = using))
+b$r.squared
+
+```
+
+# Summary and Boxplots of Quantitative Variables
+
+```{r, fig.height = 5, fig.width = 8}
+# Summary and Boxplot for Percentage of 25+ year olds with a graduate degree
+library(scales)
+summary(data2019$ACS_PCT_GRADUATE_DGR)
+library(ggplot2)
+ggplot(data2019, aes(y = data2019$ACS_PCT_GRADUATE_DGR))+
+         geom_boxplot()+
+  scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  ylab("Percentage with Graduate Degree")+
+   theme(axis.title.x = element_blank(),
+         axis.text.x = element_blank(),
+         axis.ticks.x = element_blank(),
+         axis.text.y = element_text(size = 14, face = "bold"),
+         axis.title.y = element_text(size = 14, face = "bold"))+
+  ggtitle("Distribution of Percentage of Population 25 years or older with Graduate Degree")
+```
+
+```{r, fig.height = 5, fig.width = 8}
+# Summary and Boxplot for Percentage of householders who are only Asian
+boxplot(data2019$ACS_PCT_HOUSEHOLDER_ASIAN)
+library(scales)
+summary(data2019$ACS_PCT_HOUSEHOLDER_ASIAN)
+library(ggplot2)
+ggplot(data2019, aes(y = data2019$ACS_PCT_HOUSEHOLDER_ASIAN))+
+         geom_boxplot()+
+  scale_y_continuous(labels = scales::percent_format(scale = 1))+
+  ylab("Percentage only race is Asian")+
+   theme(axis.title.x = element_blank(),
+         axis.text.x = element_blank(),
+         axis.ticks.x = element_blank(),
+         axis.text.y = element_text(size = 14, face = "bold"),
+         axis.title.y = element_text(size = 14, face = "bold"))+
+  ggtitle("Distribution of Percentage of Householders whose only race is Asian")
+```
+
+
+# Initial Logistic Regression After All Assumptions are Checked
+
+```{r}
+summary(mod3)
+```
+
+
+# Odds Ratios
+```{r}
+exp(mod3$coefficients)
+```
+
+```{r}
+# Frequency of territory/not territory
+table(data2019$TERRITORY)
+```
+
+```{r}
+# Get a territory and not territory dataset
+territory <- data2019[data2019$TERRITORY == 1,]
+noterritory <- data2019[data2019$TERRITORY == 0,]
+noterritory$REGION <- factor(noterritory$REGION, levels = c("Midwest", "Northeast", "South", "West"))
+```
+
+# Model with only counties that are not in territories
+```{r}
+mod4 <- glm(HRSA_MUA_COUNTY ~ REGION + AHRF_USDA_RUCC_2013 + ACS_PCT_HOUSEHOLDER_ASIAN + ACS_PCT_GRADUATE_DGR, data = noterritory, family = "binomial")
+summary(mod4)
+```
+
+# Variance Inflation Factors for counties not in territories
+```{r}
+vif(mod4)
+```
+
+```{r}
+# Find the probabilities (fitted values)
+probabilities <- predict(mod4, type = "response")
+
+
+# Pull just the quantitative variables from original dataset
+cols <- noterritory[,c( "ACS_PCT_GRADUATE_DGR",
+                      "ACS_PCT_HOUSEHOLDER_ASIAN")]
+
+# Get the logit for each predictor value for all quantitative variables in model
+library(dplyr)
+library(tidyverse)
+library(broom)
+plotdata <- cols %>%
+  mutate(logit = log(probabilities/(1-probabilities)))%>%
+  gather(key = "predictors", value = "predictor.value", -logit)
+```
+
+
+```{r}
+# Plot non-territory results
+ggplot(plotdata, aes(x = predictor.value, y = logit))+
+   geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "lm") + 
+  facet_wrap(~predictors, scales = "free_x")+
+  xlab("Predictor Value") + ylab("Logit")
+```
+
+
+# Model for counties in territories
+```{r}
+mod5 <- glm(HRSA_MUA_COUNTY ~ AHRF_USDA_RUCC_2013 + ACS_PCT_HOUSEHOLDER_ASIAN + ACS_PCT_GRADUATE_DGR, data = territory, family = "binomial")
+summary(mod5)
+```
+
+# Variance inflation factors for model with counties in territories
+```{r}
+vif(mod5)
+```
+
+
+```{r}
+# Find the probabilities (fitted values)
+probabilities <- predict(mod5, type = "response")
+
+
+# Pull just the quantitative variables from original dataset
+cols <- territory[,c( "ACS_PCT_GRADUATE_DGR",
+                      "ACS_PCT_HOUSEHOLDER_ASIAN")]
+
+remove <- which(is.na(territory$ACS_PCT_GRADUATE_DGR))
+cols <- cols[-remove,]
+# Get the logit for each predictor value for all quantitative variables in model
+library(dplyr)
+library(tidyverse)
+library(broom)
+plotdata <- cols %>%
+  mutate(logit = log(probabilities/(1-probabilities)))%>%
+  gather(key = "predictors", value = "predictor.value", -logit)
+```
+
+# Plot for territories
+```{r}
+ggplot(plotdata, aes(x = predictor.value, y = logit))+
+   geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "lm") + 
+  facet_wrap(~predictors, scales = "free_x")+
+  xlab("Predictor Value") + ylab("Logit")
+```
+
+# Plot of residuals for model with only territories (Puerto Rico only)
+```{r}
+plot(residuals(mod5), xlab = "Index of County in Dataset", ylab = "Deviance Residuals",
+     col = "red", pch = 16, main = "Deviance Residuals of Logistic Regression- Only Puerto Rico")
+```
+
+
+# Cook's Distance Plot (only territories)
+```{r}
+cooksd <- cooks.distance(mod5)
+
+plot(cooksd, type = "h", main = "Cook's Distance: Logistic Regression for Puerto Rico", ylab = "Cook's Distance")
+abline(h = 4/length(cooksd), col = "red")
+```
+
+
+# Histogram of predicted probabilities of being underserved for only territories
+```{r, fig.height = 6, fig.width = 10}
+hist(mod5$fitted.values, main = "Predicted Probability of Being Medically Underserved: Counties in Puerto Rico", xlab = "Predicted Probability", cex.lab = 1.5, cex.main = 1.5, cex.axis = 1.5)
+```
+
+
+# Investigating the impact of other races
+```{r}
+mod6 <- glm(HRSA_MUA_COUNTY ~ AHRF_USDA_RUCC_2013 + REGION + ACS_PCT_BLACK + ACS_PCT_HISPANIC + ACS_PCT_AIAN + ACS_PCT_NHPI +ACS_PCT_ASIAN+ ACS_PCT_MULT_RACE, data = data2019, family = "binomial")
+library(car)
+vif(mod6)
+summary(mod6)
+```
+
+```{r}
+# Find the probabilities (fitted values)
+probabilities <- predict(mod6, type = "response")
+
+
+# Pull just the quantitative variables from original dataset
+cols <- data2019[,c( "ACS_PCT_AIAN", "ACS_PCT_ASIAN", "ACS_PCT_BLACK", "ACS_PCT_HISPANIC",
+                      "ACS_PCT_MULT_RACE", "ACS_PCT_NHPI")]
+
+remove <- which(is.na(data2019$ACS_PCT_AIAN))
+cols <- cols[-remove,]
+colnames(cols)[1] <- "ACS_PCT_AMINDIAN_ALASKAN"
+# Get the logit for each predictor value for all quantitative variables in model
+library(dplyr)
+library(tidyverse)
+library(broom)
+plotdata <- cols %>%
+  mutate(logit = log(probabilities/(1-probabilities)))%>%
+  gather(key = "predictors", value = "predictor.value", -logit)
+```
+
+# Plots of logit against variables withh the inclusion of other races (Hispanic and Native Hawaiian/Pacific Islander, as well as a variable indicating the percentage of a county's population that is multiple races)
+```{r}
+ggplot(plotdata, aes(x = predictor.value, y = logit))+
+   geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "lm") + 
+  facet_wrap(~predictors, scales = "free_y")+
+  xlab("Predictor Value") + ylab("Logit")
+```
+
